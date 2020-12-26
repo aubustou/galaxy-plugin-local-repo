@@ -9,8 +9,8 @@ from typing import List, Dict, Any, Optional
 from uuid import uuid4
 
 from galaxy.api.plugin import Plugin, create_and_run_plugin
-from galaxy.api.consts import Platform, OSCompatibility
-from galaxy.api.types import Authentication, Game, LicenseInfo, LicenseType
+from galaxy.api.consts import Platform, OSCompatibility, LocalGameState
+from galaxy.api.types import Authentication, Game, LicenseInfo, LicenseType, LocalGame
 
 LOCAL_REPO_DIR = pathlib.Path("Z:\Jeux\Dépôt local")
 OS_MAP = {
@@ -24,12 +24,19 @@ OS_MAP = {
 class LocalRepoGame(Game):
     location: str
     installer: Optional[str]
+    states: List[LocalGameState] = field(default=LocalGameState.None_)
     image_files: List[Optional[str]] = field(default_factory=list)
     compatible_os: List[Optional[str]] = field(default_factory=list)
 
     @property
     def full_installer_path(self):
         return pathlib.Path(self.location) / pathlib.Path(self.installer)
+
+    def get_installation_status(self):
+        status = LocalGameState.None_
+        for state in self.states:
+            status |= state
+        return status
 
 
 class GameEncoder(JSONEncoder):
@@ -160,6 +167,8 @@ class LocalRepoPlugin(Plugin):
         stdout, stderr = await proc.communicate()
 
         logging.debug(f"[{cmd!r} exited with {proc.returncode}]")
+        if proc.returncode == 0:
+            game.states = [LocalGameState.Installed]
         if stdout:
             logging.debug(f"[stdout]\n{stdout.decode()}")
         if stderr:
@@ -170,6 +179,15 @@ class LocalRepoPlugin(Plugin):
 
     async def get_local_size(self, game_id: str, context: Any) -> Optional[int]:
         pass
+
+    async def get_local_games(self) -> List[Optional[LocalGame]]:
+        local_games = []
+        for game in self.repo_metadata.values():
+            local_game = LocalGame(
+                game_id=game.game_id, local_game_state=game.get_installation_status()
+            )
+            local_games.append(local_game)
+        return local_games
 
     async def get_os_compatibility(
         self, game_id: str, context: Any
