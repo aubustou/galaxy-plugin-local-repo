@@ -1,16 +1,18 @@
 import asyncio
+import copy
 import json
+import operator
 import pathlib
 import sys
 import logging
 from dataclasses import dataclass, field
-from json import JSONDecodeError, JSONEncoder
+from json import JSONEncoder
 from typing import List, Dict, Any, Optional
 from uuid import uuid4
 
 from galaxy.api.plugin import Plugin, create_and_run_plugin
-from galaxy.api.consts import Platform, OSCompatibility, LocalGameState
-from galaxy.api.types import Authentication, Game, LicenseInfo, LicenseType, LocalGame
+from galaxy.api.consts import Platform, OSCompatibility, LocalGameState, LicenseType
+from galaxy.api.types import Authentication, Game, LicenseInfo, LocalGame
 
 LOCAL_REPO_DIR = pathlib.Path("Z:\Jeux\Dépôt local")
 OS_MAP = {
@@ -24,7 +26,8 @@ OS_MAP = {
 class LocalRepoGame(Game):
     location: str
     installer: Optional[str]
-    states: List[LocalGameState] = field(default=LocalGameState.None_)
+    installed: bool = False
+    running: bool = False
     image_files: List[Optional[str]] = field(default_factory=list)
     compatible_os: List[Optional[str]] = field(default_factory=list)
 
@@ -34,8 +37,10 @@ class LocalRepoGame(Game):
 
     def get_installation_status(self):
         status = LocalGameState.None_
-        for state in self.states:
-            status |= state
+        if self.installed:
+            status |= LocalGameState.Installed
+        if self.running:
+            status |= LocalGameState.Running
         return status
 
 
@@ -48,15 +53,16 @@ class GameEncoder(JSONEncoder):
                 "installer": obj.installer,
                 "image_files": obj.image_files,
                 "compatible_os": obj.compatible_os,
+                "installed": obj.installed,
             }
         return JSONEncoder.default(self, obj)
 
 
 class LocalRepoPlugin(Plugin):
-
     games_ids: List[str] = []
     checking_for_new_games: bool = False
     repo_metadata: Dict[str, LocalRepoGame] = dict()
+    previous_repo_metadata: Dict[str, LocalRepoGame] = dict()
     repo_metadata_file: pathlib.Path = LOCAL_REPO_DIR / "local_repo.json"
 
     def __init__(self, reader, writer, token):
@@ -69,34 +75,41 @@ class LocalRepoPlugin(Plugin):
         )
 
         self.repo_metadata_file.touch()
-        self.repo_metadata = dict()
 
     async def authenticate(self, stored_credentials=None) -> Authentication:
         return Authentication("local_user_id", "Local User Name")
 
     async def check_for_new_games(self) -> None:
         logging.debug("Checking for changes in the local repository")
-        games_before = self.games_ids[:]
+
+        games_before = list(self.repo_metadata.values())
+        ids_before = {x.game_id for x in games_before}
         games_after = await self.get_games()
-        ids_after = [x.game_id for x in games_after]
+        ids_after = {x.game_id for x in games_after}
+
+        if ids_after == ids_before:
+            return
+
+        new_game_ids = ids_before ^ ids_after
+        removed_game_ids = ids_before - ids_after
         any_change = False
 
-        for game in games_after:
-            if game.game_id not in games_before:
-                any_change = True
-                self.add_game(game)
-                logging.debug(
-                    f"Game {game.game_id} ({game.game_title}) is new, adding to galaxy..."
-                )
+        for id_ in new_game_ids:
+            any_change = True
+            game = self.repo_metadata[id_]
+            self.add_game(game)
+            logging.debug(
+                f"Game {game.game_id} ({game.game_title}) is new, adding to galaxy..."
+            )
 
-        for game in games_before:
-            if game not in ids_after:
-                any_change = True
-                self.remove_game(game)
-                del self.repo_metadata[game]
-                logging.debug(
-                    f"Game {game} seems to be uninstalled, removing from galaxy..."
-                )
+        for id_ in removed_game_ids:
+            any_change = True
+            game = copy.copy(self.repo_metadata[id_])
+            self.remove_game(game)
+            del self.repo_metadata[id_]
+            logging.debug(
+                f"Game {game.game_id} ({game.game_title}) seems to be uninstalled, removing from galaxy..."
+            )
 
         if any_change:
             json.dump(
@@ -108,8 +121,26 @@ class LocalRepoPlugin(Plugin):
 
         logging.debug("Finished checking for changes in the local repository")
 
+    async def check_for_installed(self) -> None:
+        self.previous_repo_metadata = copy.deepcopy(self.repo_metadata)
+
+        if sorted(
+            [x for x in self.repo_metadata.values() if x.installed],
+            key=operator.attrgetter("game_id"),
+        ) != sorted(
+            [x for x in self.previous_repo_metadata.values() if x.installed],
+            key=operator.attrgetter("game_id"),
+        ):
+            json.dump(
+                self.repo_metadata,
+                self.repo_metadata_file.open(mode="w"),
+                indent=4,
+                cls=GameEncoder,
+            )
+
     def tick(self) -> None:
-        self.create_task(self.check_for_new_games(), "yep")
+        self.create_task(self.check_for_new_games(), "new")
+        self.create_task(self.check_for_installed(), "installed")
 
     async def get_owned_games(self) -> List[Game]:
         logging.debug("Get owned games")
@@ -146,8 +177,6 @@ class LocalRepoPlugin(Plugin):
                         compatible_os=metadata.get("compatible_os"),
                     )
 
-        self.games_ids = [x.game_id for x in games]
-
         return list(self.repo_metadata.values())
 
     async def launch_game(self, game_id: str) -> None:
@@ -168,7 +197,8 @@ class LocalRepoPlugin(Plugin):
 
         logging.debug(f"[{cmd!r} exited with {proc.returncode}]")
         if proc.returncode == 0:
-            game.states = [LocalGameState.Installed]
+            game.installed = True
+
         if stdout:
             logging.debug(f"[stdout]\n{stdout.decode()}")
         if stderr:
