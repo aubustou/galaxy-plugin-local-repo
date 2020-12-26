@@ -1,0 +1,11 @@
+{
+    "name": "Local Repository",
+    "platform": "test",
+    "guid": "d3481638-bb8f-4a30-8dbb-a24ffe1a7b7b",
+    "version": "0.1",
+    "description": "Local Repository integration",
+    "author": "aubustou",
+    "email": "survivalfr@yahoo.fr",
+    "url": "",
+    "script": "local_repo.py"
+}
