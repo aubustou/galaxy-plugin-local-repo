@@ -3,7 +3,8 @@ import json
 import pathlib
 import sys
 import logging
-from json import JSONDecodeError
+from dataclasses import dataclass, field
+from json import JSONDecodeError, JSONEncoder
 from typing import List, Dict, Any, Optional
 from uuid import uuid4
 
@@ -19,11 +20,36 @@ OS_MAP = {
 }
 
 
+@dataclass
+class LocalRepoGame(Game):
+    location: str
+    installer: Optional[str]
+    image_files: List[Optional[str]] = field(default_factory=list)
+    compatible_os: List[Optional[str]] = field(default_factory=list)
+
+    @property
+    def full_installer_path(self):
+        return pathlib.Path(self.location) / pathlib.Path(self.installer)
+
+
+class GameEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, LocalRepoGame):
+            return {
+                "title": obj.game_title,
+                "location": obj.location,
+                "installer": obj.installer,
+                "image_files": obj.image_files,
+                "compatible_os": obj.compatible_os,
+            }
+        return JSONEncoder.default(self, obj)
+
+
 class LocalRepoPlugin(Plugin):
 
     games_ids: List[str] = []
     checking_for_new_games: bool = False
-    repo_metadata: Dict[str, Dict] = dict()
+    repo_metadata: Dict[str, LocalRepoGame] = dict()
     repo_metadata_file: pathlib.Path = LOCAL_REPO_DIR / "local_repo.json"
 
     def __init__(self, reader, writer, token):
@@ -35,15 +61,8 @@ class LocalRepoPlugin(Plugin):
             token,
         )
 
-        if not self.repo_metadata_file.exists():
-            self.repo_metadata_file.touch()
-            self.repo_metadata = dict()
-        else:
-            try:
-                self.repo_metadata = json.load(self.repo_metadata_file.open())
-            except JSONDecodeError:
-                # Assume file is empty
-                self.repo_metadata = dict()
+        self.repo_metadata_file.touch()
+        self.repo_metadata = dict()
 
     async def authenticate(self, stored_credentials=None) -> Authentication:
         return Authentication("local_user_id", "Local User Name")
@@ -53,8 +72,11 @@ class LocalRepoPlugin(Plugin):
         games_before = self.games_ids[:]
         games_after = await self.get_games()
         ids_after = [x.game_id for x in games_after]
+        any_change = False
+
         for game in games_after:
             if game.game_id not in games_before:
+                any_change = True
                 self.add_game(game)
                 logging.debug(
                     f"Game {game.game_id} ({game.game_title}) is new, adding to galaxy..."
@@ -62,14 +84,19 @@ class LocalRepoPlugin(Plugin):
 
         for game in games_before:
             if game not in ids_after:
+                any_change = True
                 self.remove_game(game)
                 del self.repo_metadata[game]
                 logging.debug(
                     f"Game {game} seems to be uninstalled, removing from galaxy..."
                 )
-        if games_before or games_after:
+
+        if any_change:
             json.dump(
-                self.repo_metadata, self.repo_metadata_file.open(mode="w"), indent=4
+                self.repo_metadata,
+                self.repo_metadata_file.open(mode="w"),
+                indent=4,
+                cls=GameEncoder,
             )
 
         logging.debug("Finished checking for changes in the local repository")
@@ -80,7 +107,12 @@ class LocalRepoPlugin(Plugin):
     async def get_owned_games(self) -> List[Game]:
         logging.debug("Get owned games")
         games = await self.get_games()
-        json.dump(self.repo_metadata, self.repo_metadata_file.open(mode="w"), indent=4)
+        json.dump(
+            self.repo_metadata,
+            self.repo_metadata_file.open(mode="w"),
+            indent=4,
+            cls=GameEncoder,
+        )
         return games
 
     async def get_games(self) -> List[Game]:
@@ -96,39 +128,31 @@ class LocalRepoPlugin(Plugin):
                         metadata["uuid"] = game_uuid
                         json.dump(metadata, metadata_file.open("w"), indent=4)
                     game_title = metadata["title"]
-                    self.repo_metadata[game_uuid] = {
-                        "title": game_title,
-                        "location": str(item),
-                        "installer": metadata.get("installer_file"),
-                        "image_files": metadata.get("image_files", []),
-                        "compatible_os": metadata.get("compatible_os", ["windows"]),
-                    }
-
-                    games.append(
-                        Game(
-                            game_uuid,
-                            game_title,
-                            None,
-                            LicenseInfo(LicenseType.SinglePurchase),
-                        )
+                    self.repo_metadata[game_uuid] = LocalRepoGame(
+                        game_id=game_uuid,
+                        game_title=game_title,
+                        dlcs=None,
+                        license_info=LicenseInfo(LicenseType.SinglePurchase),
+                        location=str(item),
+                        installer=metadata.get("installer_file"),
+                        image_files=metadata.get("image_files", []),
+                        compatible_os=metadata.get("compatible_os"),
                     )
 
         self.games_ids = [x.game_id for x in games]
 
-        return games
+        return list(self.repo_metadata.values())
 
     async def launch_game(self, game_id: str) -> None:
         return
 
     async def install_game(self, game_id: str) -> None:
-        installer_file = self.repo_metadata[game_id].get("installer")
+        game = self.repo_metadata[game_id]
+        installer_file = game.installer
         if not installer_file:
             return
 
-        cmd = str(
-            pathlib.Path(self.repo_metadata[game_id]["location"])
-            / pathlib.Path(installer_file)
-        )
+        cmd = str(game.full_installer_path)
         proc = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -142,7 +166,7 @@ class LocalRepoPlugin(Plugin):
             logging.debug(f"[stderr]\n{stderr.decode()}")
 
     async def uninstall_game(self, game_id):
-        return
+        pass
 
     async def get_local_size(self, game_id: str, context: Any) -> Optional[int]:
         pass
@@ -150,7 +174,7 @@ class LocalRepoPlugin(Plugin):
     async def get_os_compatibility(
         self, game_id: str, context: Any
     ) -> Optional[OSCompatibility]:
-        return OS_MAP[self.repo_metadata[game_id]["compatible_os"][0]]
+        return OS_MAP[self.repo_metadata[game_id].compatible_os[0]]
 
 
 def main():
