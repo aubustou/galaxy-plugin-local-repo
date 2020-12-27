@@ -118,7 +118,7 @@ class LocalRepoPlugin(Plugin):
         for id_ in removed_game_ids:
             any_change = True
             game = copy.copy(self.repo_metadata[id_])
-            self.remove_game(game)
+            self.remove_game(id_)
             del self.repo_metadata[id_]
             logging.debug(
                 f"Game {game.game_id} ({game.game_title}) seems to be uninstalled, removing from galaxy..."
@@ -157,7 +157,7 @@ class LocalRepoPlugin(Plugin):
                 indent=4,
                 cls=GameEncoder,
             )
-        asyncio.sleep(5)
+        await asyncio.sleep(5)
         running.clear()
 
     def tick(self) -> None:
