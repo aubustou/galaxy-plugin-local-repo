@@ -5,6 +5,7 @@ import operator
 import pathlib
 import sys
 import logging
+from asyncio import Event
 from dataclasses import dataclass, field
 from json import JSONEncoder
 from typing import List, Dict, Any, Optional
@@ -70,6 +71,8 @@ class LocalRepoPlugin(Plugin):
     repo_metadata: Dict[str, LocalRepoGame] = dict()
     previous_repo_metadata: Dict[str, LocalRepoGame] = dict()
     repo_metadata_file: pathlib.Path = LOCAL_REPO_DIR / "local_repo.json"
+    new_game_task_running: Event = Event()
+    installed_task_running: Event = Event()
 
     def __init__(self, reader, writer, token):
         super().__init__(
@@ -85,7 +88,11 @@ class LocalRepoPlugin(Plugin):
     async def authenticate(self, stored_credentials=None) -> Authentication:
         return Authentication("local_user_id", "Local User Name")
 
-    async def check_for_new_games(self) -> None:
+    async def check_for_new_games(self, running: Event) -> None:
+        if running.is_set():
+            # Task is already running
+            return
+        running.set()
         logging.debug("Checking for changes in the local repository")
 
         games_before = list(self.repo_metadata.values())
@@ -127,8 +134,14 @@ class LocalRepoPlugin(Plugin):
 
         logging.debug("Finished checking for changes in the local repository")
         await asyncio.sleep(5)
+        running.clear()
 
-    async def check_for_installed(self) -> None:
+    async def check_for_installed(self, running: Event) -> None:
+        if running.is_set():
+            # Task is already running
+            return
+        running.set()
+
         self.previous_repo_metadata = copy.deepcopy(self.repo_metadata)
 
         if sorted(
@@ -144,10 +157,14 @@ class LocalRepoPlugin(Plugin):
                 indent=4,
                 cls=GameEncoder,
             )
+        asyncio.sleep(5)
+        running.clear()
 
     def tick(self) -> None:
-        self.create_task(self.check_for_new_games(), "new")
-        self.create_task(self.check_for_installed(), "installed")
+        self.create_task(self.check_for_new_games(self.new_game_task_running), "new")
+        self.create_task(
+            self.check_for_installed(self.installed_task_running), "installed"
+        )
 
     async def get_owned_games(self) -> List[Game]:
         logging.debug("Get owned games")
