@@ -43,6 +43,12 @@ class LocalRepoGame(Game):
             status |= LocalGameState.Running
         return status
 
+    def get_os_compatibility(self):
+        compatibility = OSCompatibility(0)
+        for os in self.compatible_os:
+            compatibility |= OS_MAP.get(os, OSCompatibility(0))
+        return compatibility if compatibility else None
+
 
 class GameEncoder(JSONEncoder):
     def default(self, obj):
@@ -120,6 +126,7 @@ class LocalRepoPlugin(Plugin):
             )
 
         logging.debug("Finished checking for changes in the local repository")
+        await asyncio.sleep(5)
 
     async def check_for_installed(self) -> None:
         self.previous_repo_metadata = copy.deepcopy(self.repo_metadata)
@@ -221,7 +228,8 @@ class LocalRepoPlugin(Plugin):
     async def get_os_compatibility(
         self, game_id: str, context: Any
     ) -> Optional[OSCompatibility]:
-        return OS_MAP[self.repo_metadata[game_id].compatible_os[0]]
+        game = self.repo_metadata[game_id]
+        return game.get_os_compatibility() if game else None
 
 
 def main():
