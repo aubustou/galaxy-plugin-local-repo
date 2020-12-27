@@ -154,7 +154,6 @@ class LocalRepoPlugin(Plugin):
         return games
 
     async def get_games(self) -> List[Game]:
-        games = []
         for item in LOCAL_REPO_DIR.iterdir():
             if item.is_dir():
                 metadata_file: pathlib.Path = item / "game.json"
