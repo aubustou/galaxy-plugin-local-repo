@@ -1,0 +1,7 @@
+{
+	"title": "Your DRM-free game",
+	"installer_file": "setup.exe",
+    "compatible_os": [
+        "windows"
+    ]
+}
