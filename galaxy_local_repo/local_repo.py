@@ -93,6 +93,17 @@ class LocalRepoPlugin(Plugin):
             # Task is already running
             return
         running.set()
+        try:
+            await self._sync_repo_changes()
+        finally:
+            # Always release the lock (even on early return or error),
+            # otherwise the check never runs again.
+            try:
+                await asyncio.sleep(5)  # throttle
+            finally:
+                running.clear()
+
+    async def _sync_repo_changes(self) -> None:
         logging.debug("Checking for changes in the local repository")
 
         games_before = list(self.repo_metadata.values())
@@ -103,7 +114,7 @@ class LocalRepoPlugin(Plugin):
         if ids_after == ids_before:
             return
 
-        new_game_ids = ids_before ^ ids_after
+        new_game_ids = ids_after - ids_before
         removed_game_ids = ids_before - ids_after
         any_change = False
 
@@ -133,8 +144,6 @@ class LocalRepoPlugin(Plugin):
             )
 
         logging.debug("Finished checking for changes in the local repository")
-        await asyncio.sleep(5)
-        running.clear()
 
     async def check_for_installed(self, running: Event) -> None:
         if running.is_set():
